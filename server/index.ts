@@ -532,6 +532,97 @@ app.put("/api/story", requireAuth, async (req, res) => {
   }
 });
 
+// Rewards routes
+app.post("/api/rewards/daily", requireAuth, async (req, res) => {
+  try {
+    const userId = (req.user as any).id;
+    const today = new Date().toISOString().split('T')[0];
+    
+    // Check if daily reward already claimed today
+    const existingClaim = await db.query.achievements.findFirst({
+      where: sql`${schema.achievements.userId} = ${userId} AND ${schema.achievements.type} = 'daily_reward' AND DATE(${schema.achievements.unlockedAt}) = ${today}`,
+    });
+
+    if (existingClaim) {
+      return res.status(400).json({ error: "Daily reward already claimed today" });
+    }
+
+    const character = await db.query.characters.findFirst({
+      where: eq(schema.characters.userId, userId),
+    });
+
+    if (!character) {
+      return res.status(404).json({ error: "Character not found" });
+    }
+
+    const xpReward = 100;
+    const coinReward = 50;
+
+    // Update character with rewards
+    await db
+      .update(schema.characters)
+      .set({
+        xp: character.xp + xpReward,
+        coins: character.coins + coinReward,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.characters.id, character.id));
+
+    // Record the daily reward claim
+    await db.insert(schema.achievements).values({
+      userId,
+      title: "Daily Login",
+      description: "Claimed daily login reward",
+      type: "daily_reward",
+    });
+
+    res.json({ xpReward, coinReward });
+  } catch (error) {
+    console.error("Error claiming daily reward:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Character upgrade route
+app.post("/api/character/upgrade", requireAuth, async (req, res) => {
+  try {
+    const { strength, endurance, agility } = req.body;
+    const userId = (req.user as any).id;
+    
+    const character = await db.query.characters.findFirst({
+      where: eq(schema.characters.userId, userId),
+    });
+
+    if (!character) {
+      return res.status(404).json({ error: "Character not found" });
+    }
+
+    const totalUpgrades = (strength || 0) + (endurance || 0) + (agility || 0);
+    const upgradeCost = totalUpgrades * 50; // 50 coins per stat point
+
+    if (character.coins < upgradeCost) {
+      return res.status(400).json({ error: "Insufficient coins" });
+    }
+
+    const [updatedCharacter] = await db
+      .update(schema.characters)
+      .set({
+        strength: character.strength + (strength || 0),
+        endurance: character.endurance + (endurance || 0),
+        agility: character.agility + (agility || 0),
+        coins: character.coins - upgradeCost,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.characters.id, character.id))
+      .returning();
+
+    res.json(updatedCharacter);
+  } catch (error) {
+    console.error("Error upgrading character:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // WebSocket handling
 wss.on("connection", (ws) => {
   console.log("New WebSocket connection");
